@@ -15,10 +15,11 @@ import type {
 } from "@/lib/types";
 
 const DEFAULT_ACCOUNT_TEMPLATES: Array<{ name: string; type: AccountType }> = [
-  { name: "Cash Wallet", type: "Cash" },
-  { name: "Main Bank", type: "Bank" },
-  { name: "Easypaisa", type: "Easypaisa" },
-  { name: "Savings", type: "Savings" },
+  { name: "UBL", type: "Bank" },
+  { name: "Meezan", type: "Bank" },
+  { name: "HBL", type: "Bank" },
+  { name: "MCB", type: "Bank" },
+  { name: "Cash (Muneeb, Ayesha)", type: "Cash" },
 ];
 
 function titleValue(content: string) {

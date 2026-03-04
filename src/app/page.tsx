@@ -931,7 +931,7 @@ export default function Home() {
                   <p className="text-lg font-bold text-sky-700 dark:text-sky-300">
                     {formatPkr(account.balance)}
                   </p>
-                  {account.type === "Bank" ? (
+                  {account.type === "Bank" || account.type === "Easypaisa" ? (
                     <button
                       type="button"
                       onClick={() => {
