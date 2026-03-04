@@ -1,36 +1,148 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Couple Monthly Budget Planner
 
-## Getting Started
+Shared monthly budget planner for couples using Notion as the only data store.
 
-First, run the development server:
+## Tech Stack
+
+- Next.js (App Router) + TypeScript
+- Tailwind CSS
+- Framer Motion
+- Recharts
+- Notion API (server-side only)
+
+## 1) Prerequisites
+
+Before running:
+
+1. Create a Notion integration and copy its API key.
+2. Share your Notion parent page with that integration.
+3. Copy the parent page ID.
+4. Use Node.js 18+.
+
+## 2) Environment Setup
+
+Create a `.env` file from `.env.example`:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NOTION_API_KEY=
+NOTION_PARENT_PAGE_ID=
+AUTH_SECRET=
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Notes:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `NOTION_PARENT_PAGE_ID` must be a **page ID**, not a database ID.
+- `AUTH_SECRET` should be a strong secret (at least 24 characters).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 3) Run Locally
 
-## Learn More
+```bash
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open http://localhost:3000.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 4) First-Run Automatic Notion Setup
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+On first load, the app automatically creates and configures all required Notion databases under your parent page:
 
-## Deploy on Vercel
+- Households
+- Users
+- Accounts
+- Categories
+- Expenses
+- Income
+- Hidden Savings
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+It also creates:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- System Config page marker
+- Default categories
+- Shared household
+- Two login users
+
+Default login credentials:
+
+- `muneeb / muneeb123`
+- `ayesha / ayesha123`
+
+## 5) How to Use the App
+
+### Login
+
+- Open the app and sign in with either default user.
+- Both users see the same household financial data.
+
+### Month Planning
+
+- Select a month using `YYYY-MM`.
+- New month initializes accounts automatically.
+- Use **Duplicate Previous Month** to copy previous balances.
+
+### Add / Remove Bank Accounts
+
+- Use the **Accounts** section form to add a new bank account.
+- Click **Remove** on a bank account card to delete it.
+
+### Financial Actions
+
+- Add/edit/delete income
+- Add/edit/delete expenses
+- Transfer between accounts (overdraft is blocked)
+- Move money to hidden savings
+- Set per-category budget limits and monitor progress
+
+### Analytics
+
+- Expense-by-category pie chart
+- Monthly spending trend bar chart
+- Balance over time line chart
+- Account distribution chart
+- Budget vs actual chart
+
+## 6) Mobile Experience
+
+The dashboard is optimized for small screens:
+
+- Stacked controls and forms
+- Compact summary cards
+- Mobile-friendly list rows and action buttons
+- Responsive chart heights
+
+## 7) API Routes
+
+- `/api/setup-notion`
+- `/api/auth/login`
+- `/api/auth/me`
+- `/api/auth/logout`
+- `/api/accounts`
+- `/api/expenses`
+- `/api/income`
+- `/api/categories`
+- `/api/savings`
+- `/api/month`
+
+All sensitive Notion operations run server-side. `NOTION_API_KEY` is never exposed to the frontend.
+
+## 8) Deploy to Vercel
+
+1. Push this repository to GitHub.
+2. Import the repo into Vercel.
+3. Set environment variables in Vercel:
+	 - `NOTION_API_KEY`
+	 - `NOTION_PARENT_PAGE_ID`
+	 - `AUTH_SECRET`
+4. Deploy.
+
+No external database and no runtime filesystem writes are required.
+
+## 9) Troubleshooting
+
+- Setup fails with validation errors:
+	- Ensure `NOTION_PARENT_PAGE_ID` is a page ID.
+	- Ensure integration has access to the parent page.
+- Login fails:
+	- Call `/api/setup-notion` once to ensure initial users are created.
+- Empty dashboard:
+	- Select the current month and add income/accounts first.
