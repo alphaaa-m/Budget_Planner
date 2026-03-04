@@ -48,9 +48,16 @@ type SessionUser = {
   householdId: string;
 };
 
-type SetupCredentials = {
-  username: string;
-  password: string;
+type ActivityLogEntry = {
+  id: string;
+  timestamp: string;
+  actorName: string;
+  actorUsername: string;
+  action: string;
+  entity: string;
+  description: string;
+  householdId: string;
+  monthKey?: string | null;
 };
 
 type ApiEnvelope<T> = {
@@ -162,11 +169,11 @@ export default function Home() {
   const [loadingData, setLoadingData] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [defaultCredentials, setDefaultCredentials] = useState<SetupCredentials[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
   const [user, setUser] = useState<SessionUser | null>(null);
 
-  const [loginUsername, setLoginUsername] = useState("muneeb");
-  const [loginPassword, setLoginPassword] = useState("muneeb123");
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [monthKey, setMonthKey] = useState(getCurrentMonthKey());
@@ -257,7 +264,16 @@ export default function Home() {
           }),
         });
 
-        const [accountsData, categoriesData, expenseData, incomeData, savingsData, allExpenseData, allAccountData] =
+        const [
+          accountsData,
+          categoriesData,
+          expenseData,
+          incomeData,
+          savingsData,
+          allExpenseData,
+          allAccountData,
+          activityData,
+        ] =
           await Promise.all([
             apiRequest<{ accounts: AccountRecord[] }>(
               `/api/accounts?monthKey=${encodeURIComponent(targetMonth)}`,
@@ -274,6 +290,9 @@ export default function Home() {
             ),
             apiRequest<{ expenses: ExpenseRecord[] }>("/api/expenses?all=true"),
             apiRequest<{ accounts: AccountRecord[] }>("/api/accounts?all=true"),
+            apiRequest<{ logs: ActivityLogEntry[] }>("/api/activity?limit=30").catch(() => ({
+              logs: [],
+            })),
           ]);
 
         setAccounts(accountsData.accounts);
@@ -283,6 +302,7 @@ export default function Home() {
         setSavings(savingsData.savings);
         setAllExpenses(allExpenseData.expenses);
         setAllAccounts(allAccountData.accounts);
+        setActivityLogs(activityData.logs);
       } catch (apiError) {
         setError(apiError instanceof Error ? apiError.message : "Failed to load dashboard data");
       } finally {
@@ -297,15 +317,12 @@ export default function Home() {
 
     async function initialize() {
       try {
-        const setupData = await apiRequest<{
-          defaultUsers: SetupCredentials[];
-        }>("/api/setup-notion", { method: "POST" });
+        await apiRequest("/api/setup-notion", { method: "POST" });
 
         if (!active) {
           return;
         }
 
-        setDefaultCredentials(setupData.defaultUsers);
         await refreshSession();
       } catch (setupError) {
         if (!active) {
@@ -758,17 +775,6 @@ export default function Home() {
               {loginLoading ? "Signing in..." : "Login"}
             </button>
           </form>
-
-          <div className="mt-4 rounded-xl border border-sky-200/70 bg-sky-50/80 p-3 text-xs text-sky-700 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-300">
-            <p className="font-semibold">Auto-created default users</p>
-            <ul className="mt-2 space-y-1">
-              {defaultCredentials.map((credential) => (
-                <li key={credential.username}>
-                  {credential.username} / {credential.password}
-                </li>
-              ))}
-            </ul>
-          </div>
 
           {error ? (
             <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
@@ -1504,6 +1510,30 @@ export default function Home() {
             </ResponsiveContainer>
           )}
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-white/50 bg-white/70 p-4 shadow-sm backdrop-blur-xl dark:border-slate-700/60 dark:bg-slate-900/70">
+        <h3 className="mb-3 font-semibold text-slate-900 dark:text-slate-100">Recent Activity</h3>
+        {activityLogs.length === 0 ? (
+          <EmptyState label="No changes logged yet." />
+        ) : (
+          <div className="space-y-2">
+            {activityLogs.map((log) => (
+              <div
+                key={log.id}
+                className="rounded-xl border border-slate-200/70 bg-white p-3 dark:border-slate-700/70 dark:bg-slate-950"
+              >
+                <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                  {log.actorName} ({log.actorUsername}) · {log.description}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {new Date(log.timestamp).toLocaleString()}
+                  {log.monthKey ? ` · ${log.monthKey}` : ""}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   );

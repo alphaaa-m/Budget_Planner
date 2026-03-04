@@ -1,8 +1,10 @@
 import { NextRequest } from "next/server";
 import { apiFailure, apiSuccess, handleApiError } from "@/lib/api";
+import { logActivitySafely } from "@/lib/activity-log";
 import {
   createExpense,
   deleteExpense,
+  getExpense,
   listExpenses,
   updateExpense,
 } from "@/lib/budget-service";
@@ -38,6 +40,13 @@ export async function POST(request: NextRequest) {
     }
 
     const expense = await createExpense(session.householdId, parsed.data);
+    await logActivitySafely({
+      session,
+      action: "create",
+      entity: "expense",
+      description: `Added expense "${expense.title}" for ${expense.amount}`,
+      monthKey: expense.monthKey,
+    });
     return apiSuccess({ expense }, 201);
   } catch (error) {
     return handleApiError(error);
@@ -54,7 +63,33 @@ export async function PATCH(request: NextRequest) {
       return apiFailure("Invalid expense update payload", 400, parsed.error.flatten());
     }
 
+    const previous = await getExpense(session.householdId, parsed.data.id);
     const expense = await updateExpense(session.householdId, parsed.data);
+
+    const changes: string[] = [];
+    if (previous.title !== expense.title) {
+      changes.push(`title "${previous.title}"→"${expense.title}"`);
+    }
+    if (previous.amount !== expense.amount) {
+      changes.push(`amount ${previous.amount}→${expense.amount}`);
+    }
+    if (previous.accountId !== expense.accountId) {
+      changes.push("account changed");
+    }
+    if (previous.categoryId !== expense.categoryId) {
+      changes.push("category changed");
+    }
+
+    await logActivitySafely({
+      session,
+      action: "update",
+      entity: "expense",
+      description:
+        changes.length > 0
+          ? `Updated expense "${expense.title}" (${changes.join(", ")})`
+          : `Updated expense "${expense.title}"`,
+      monthKey: expense.monthKey,
+    });
     return apiSuccess({ expense });
   } catch (error) {
     return handleApiError(error);
@@ -71,7 +106,15 @@ export async function DELETE(request: NextRequest) {
       return apiFailure("Invalid delete payload", 400, parsed.error.flatten());
     }
 
+    const expense = await getExpense(session.householdId, parsed.data.id);
     await deleteExpense(session.householdId, parsed.data.id);
+    await logActivitySafely({
+      session,
+      action: "delete",
+      entity: "expense",
+      description: `Deleted expense "${expense.title}" (${expense.amount})`,
+      monthKey: expense.monthKey,
+    });
     return apiSuccess({ deleted: true });
   } catch (error) {
     return handleApiError(error);

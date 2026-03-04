@@ -64,8 +64,10 @@ It also creates:
 
 Default login credentials:
 
-- `muneeb / muneeb123`
-- `ayesha / ayesha123`
+- `muneeb`
+- `ayesha`
+
+For security, passwords are not displayed by the UI or setup API response.
 
 ## 5) How to Use the App
 
@@ -122,6 +124,7 @@ The dashboard is optimized for small screens:
 - `/api/categories`
 - `/api/savings`
 - `/api/month`
+- `/api/activity`
 
 All sensitive Notion operations run server-side. `NOTION_API_KEY` is never exposed to the frontend.
 

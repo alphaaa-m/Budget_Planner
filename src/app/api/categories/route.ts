@@ -1,7 +1,9 @@
 import { NextRequest } from "next/server";
 import { apiFailure, apiSuccess, handleApiError } from "@/lib/api";
+import { logActivitySafely } from "@/lib/activity-log";
 import {
   createCategory,
+  getCategory,
   listCategories,
   updateCategory,
 } from "@/lib/budget-service";
@@ -32,6 +34,12 @@ export async function POST(request: NextRequest) {
     }
 
     const category = await createCategory(session.householdId, parsed.data);
+    await logActivitySafely({
+      session,
+      action: "create",
+      entity: "category",
+      description: `Created category "${category.name}" with budget ${category.budgetLimit}`,
+    });
     return apiSuccess({ category }, 201);
   } catch (error) {
     return handleApiError(error);
@@ -48,7 +56,29 @@ export async function PATCH(request: NextRequest) {
       return apiFailure("Invalid category update payload", 400, parsed.error.flatten());
     }
 
+    const previous = await getCategory(session.householdId, parsed.data.id);
     const category = await updateCategory(session.householdId, parsed.data);
+
+    const changes: string[] = [];
+    if (previous.name !== category.name) {
+      changes.push(`name "${previous.name}"→"${category.name}"`);
+    }
+    if (previous.color !== category.color) {
+      changes.push(`color ${previous.color}→${category.color}`);
+    }
+    if (previous.budgetLimit !== category.budgetLimit) {
+      changes.push(`budget ${previous.budgetLimit}→${category.budgetLimit}`);
+    }
+
+    await logActivitySafely({
+      session,
+      action: "update",
+      entity: "category",
+      description:
+        changes.length > 0
+          ? `Updated category "${category.name}" (${changes.join(", ")})`
+          : `Updated category "${category.name}"`,
+    });
     return apiSuccess({ category });
   } catch (error) {
     return handleApiError(error);

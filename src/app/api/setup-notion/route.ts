@@ -11,7 +11,6 @@ export async function GET() {
       databaseIds: setup.databases,
       defaultUsers: DEFAULT_COUPLE_USERS.map((item) => ({
         username: item.username,
-        password: item.password,
       })),
     });
   } catch (error) {

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { apiFailure, apiSuccess, handleApiError } from "@/lib/api";
+import { logActivitySafely } from "@/lib/activity-log";
 import {
   createHiddenSavings,
   listHiddenSavings,
@@ -32,6 +33,13 @@ export async function POST(request: NextRequest) {
     }
 
     const savings = await createHiddenSavings(session.householdId, parsed.data);
+    await logActivitySafely({
+      session,
+      action: "create",
+      entity: "hidden_savings",
+      description: `Moved ${savings.amount} to hidden savings "${savings.title}"`,
+      monthKey: savings.monthKey,
+    });
     return apiSuccess({ savings }, 201);
   } catch (error) {
     return handleApiError(error);
