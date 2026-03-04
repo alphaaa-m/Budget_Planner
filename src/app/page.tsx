@@ -89,12 +89,14 @@ type SavingsFormState = {
   amount: string;
   date: string;
   accountId: string;
+  note: string;
 };
 
 type TransferFormState = {
   fromAccountId: string;
   toAccountId: string;
   amount: string;
+  note: string;
 };
 
 type BankAccountFormState = {
@@ -233,11 +235,13 @@ export default function Home() {
     amount: "",
     date: todayIso,
     accountId: "",
+    note: "",
   });
   const [transferForm, setTransferForm] = useState<TransferFormState>({
     fromAccountId: "",
     toAccountId: "",
     amount: "",
+    note: "",
   });
   const [bankAccountForm, setBankAccountForm] = useState<BankAccountFormState>({
     name: "",
@@ -478,6 +482,48 @@ export default function Home() {
     [accounts],
   );
 
+  const sharedCashAccount = useMemo(
+    () =>
+      accounts.find(
+        (account) => account.name.trim().toLowerCase() === "cash (muneeb, ayesha)",
+      ) ?? null,
+    [accounts],
+  );
+
+  const cashMuneebAccount = useMemo(
+    () =>
+      accounts.find(
+        (account) => account.name.trim().toLowerCase() === "cash (muneeb)",
+      ) ?? null,
+    [accounts],
+  );
+
+  const cashAyeshaAccount = useMemo(
+    () =>
+      accounts.find(
+        (account) => account.name.trim().toLowerCase() === "cash (ayesha)",
+      ) ?? null,
+    [accounts],
+  );
+
+  const showCashSections = useMemo(
+    () => Boolean(sharedCashAccount || cashMuneebAccount || cashAyeshaAccount),
+    [sharedCashAccount, cashMuneebAccount, cashAyeshaAccount],
+  );
+
+  const nonCashAccounts = useMemo(
+    () =>
+      accounts.filter((account) => {
+        const name = account.name.trim().toLowerCase();
+        return (
+          name !== "cash (muneeb)" &&
+          name !== "cash (ayesha)" &&
+          name !== "cash (muneeb, ayesha)"
+        );
+      }),
+    [accounts],
+  );
+
   const budgetVsActualData = useMemo(
     () =>
       categories.map((category) => ({
@@ -599,6 +645,7 @@ export default function Home() {
           date: savingsForm.date,
           accountId: savingsForm.accountId,
           monthKey,
+          note: savingsForm.note,
         }),
       });
 
@@ -607,6 +654,7 @@ export default function Home() {
         amount: "",
         date: todayIso,
         accountId: savingsForm.accountId,
+        note: "",
       });
 
       await loadMonthData(monthKey);
@@ -631,10 +679,11 @@ export default function Home() {
           fromAccountId: transferForm.fromAccountId,
           toAccountId: transferForm.toAccountId,
           amount: Number(transferForm.amount),
+          note: transferForm.note,
         }),
       });
 
-      setTransferForm((previous) => ({ ...previous, amount: "" }));
+      setTransferForm((previous) => ({ ...previous, amount: "", note: "" }));
       await loadMonthData(monthKey);
     } catch (operationError) {
       setError(operationError instanceof Error ? operationError.message : "Unable to transfer funds");
@@ -992,35 +1041,60 @@ export default function Home() {
         {accounts.length === 0 ? (
           <EmptyState label="No accounts yet for this month." />
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {accounts.map((account) => (
-              <motion.div
-                key={account.id}
-                whileHover={{ y: -2, scale: 1.01 }}
-                className="rounded-xl border border-slate-200/70 bg-white p-3 dark:border-slate-700/70 dark:bg-slate-950"
-              >
-                <p className="text-xs uppercase tracking-wide text-slate-500">{account.type}</p>
-                <p className="font-semibold text-slate-900 dark:text-slate-100">{account.name}</p>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <p className="text-lg font-bold text-sky-700 dark:text-sky-300">
-                    {formatPkr(account.balance)}
+          <div className="space-y-4">
+            {showCashSections ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-emerald-200/70 bg-emerald-50/70 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+                  <p className="text-xs uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Cash Section</p>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">Cash (Muneeb)</p>
+                  <p className="mt-2 text-lg font-bold text-emerald-700 dark:text-emerald-300">
+                    {formatPkr(cashMuneebAccount?.balance ?? sharedCashAccount?.balance ?? 0)}
                   </p>
-                  {account.type === "Bank" || account.type === "Easypaisa" ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm("Remove this bank account?")) {
-                          void handleDeleteAccount(account.id);
-                        }
-                      }}
-                      className="rounded-lg border border-rose-300/70 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950/30"
-                    >
-                      Remove
-                    </button>
-                  ) : null}
                 </div>
-              </motion.div>
-            ))}
+                <div className="rounded-xl border border-cyan-200/70 bg-cyan-50/70 p-3 dark:border-cyan-900/60 dark:bg-cyan-950/20">
+                  <p className="text-xs uppercase tracking-wide text-cyan-700 dark:text-cyan-300">Cash Section</p>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">Cash (Ayesha)</p>
+                  <p className="mt-2 text-lg font-bold text-cyan-700 dark:text-cyan-300">
+                    {formatPkr(cashAyeshaAccount?.balance ?? 0)}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
+            {nonCashAccounts.length === 0 ? (
+              <EmptyState label="No non-cash accounts yet for this month." />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {nonCashAccounts.map((account) => (
+                  <motion.div
+                    key={account.id}
+                    whileHover={{ y: -2, scale: 1.01 }}
+                    className="rounded-xl border border-slate-200/70 bg-white p-3 dark:border-slate-700/70 dark:bg-slate-950"
+                  >
+                    <p className="text-xs uppercase tracking-wide text-slate-500">{account.type}</p>
+                    <p className="font-semibold text-slate-900 dark:text-slate-100">{account.name}</p>
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <p className="text-lg font-bold text-sky-700 dark:text-sky-300">
+                        {formatPkr(account.balance)}
+                      </p>
+                      {account.type === "Bank" || account.type === "Easypaisa" ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm("Remove this bank account?")) {
+                              void handleDeleteAccount(account.id);
+                            }
+                          }}
+                          className="rounded-lg border border-rose-300/70 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950/30"
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -1127,20 +1201,6 @@ export default function Home() {
           />
           <select
             required
-            value={expenseForm.accountId}
-            onChange={(event) =>
-              setExpenseForm((previous) => ({ ...previous, accountId: event.target.value }))
-            }
-            className="w-full rounded-xl border border-slate-300/60 bg-white px-3 py-2 text-sm dark:border-slate-700/60 dark:bg-slate-950"
-          >
-            {accounts.map((account) => (
-              <option key={account.id} value={account.id}>
-                {account.name}
-              </option>
-            ))}
-          </select>
-          <select
-            required
             value={expenseForm.categoryId}
             onChange={(event) =>
               setExpenseForm((previous) => ({ ...previous, categoryId: event.target.value }))
@@ -1231,6 +1291,14 @@ export default function Home() {
             }
             className="w-full rounded-xl border border-slate-300/60 bg-white px-3 py-2 text-sm dark:border-slate-700/60 dark:bg-slate-950"
           />
+          <input
+            placeholder="Optional note"
+            value={transferForm.note}
+            onChange={(event) =>
+              setTransferForm((previous) => ({ ...previous, note: event.target.value }))
+            }
+            className="w-full rounded-xl border border-slate-300/60 bg-white px-3 py-2 text-sm dark:border-slate-700/60 dark:bg-slate-950"
+          />
           <button className="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500">
             Transfer
           </button>
@@ -1285,6 +1353,14 @@ export default function Home() {
               </option>
             ))}
           </select>
+          <input
+            placeholder="Optional note"
+            value={savingsForm.note}
+            onChange={(event) =>
+              setSavingsForm((previous) => ({ ...previous, note: event.target.value }))
+            }
+            className="w-full rounded-xl border border-slate-300/60 bg-white px-3 py-2 text-sm dark:border-slate-700/60 dark:bg-slate-950"
+          />
           <button className="rounded-xl bg-amber-600 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-500">
             Move to Hidden Savings
           </button>
@@ -1621,20 +1697,41 @@ export default function Home() {
           <EmptyState label="No changes logged yet." />
         ) : (
           <div className="space-y-2">
-            {activityLogs.map((log) => (
-              <div
-                key={log.id}
-                className="rounded-xl border border-slate-200/70 bg-white p-3 dark:border-slate-700/70 dark:bg-slate-950"
-              >
-                <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                  {log.actorName} ({log.actorUsername}) · {log.description}
-                </p>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  {new Date(log.timestamp).toLocaleString()}
-                  {log.monthKey ? ` · ${log.monthKey}` : ""}
-                </p>
-              </div>
-            ))}
+            {activityLogs.map((log) => {
+              const actor = log.actorUsername.trim().toLowerCase();
+              const isMuneeb = actor === "muneeb";
+              const isAyesha = actor === "ayesha";
+
+              const cardTone = isMuneeb
+                ? "border-sky-200/70 bg-sky-50/70 dark:border-sky-900/60 dark:bg-sky-950/20"
+                : isAyesha
+                  ? "border-fuchsia-200/70 bg-fuchsia-50/70 dark:border-fuchsia-900/60 dark:bg-fuchsia-950/20"
+                  : "border-slate-200/70 bg-white dark:border-slate-700/70 dark:bg-slate-950";
+
+              const badgeTone = isMuneeb
+                ? "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-200"
+                : isAyesha
+                  ? "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/50 dark:text-fuchsia-200"
+                  : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200";
+
+              return (
+                <div
+                  key={log.id}
+                  className={`rounded-xl border p-3 ${cardTone}`}
+                >
+                  <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                    <span className={`mr-2 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${badgeTone}`}>
+                      {log.actorName}
+                    </span>
+                    {log.description}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {new Date(log.timestamp).toLocaleString()}
+                    {log.monthKey ? ` · ${log.monthKey}` : ""}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>

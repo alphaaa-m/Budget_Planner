@@ -67,11 +67,12 @@ export async function PATCH(request: NextRequest) {
       }
 
       const result = await transferBetweenAccounts(session.householdId, parsedTransfer.data);
+      const transferNote = parsedTransfer.data.note?.trim();
       void logActivitySafely({
         session,
         action: "transfer",
         entity: "account",
-        description: `Transferred ${parsedTransfer.data.amount} from "${result.from.name}" to "${result.to.name}"`,
+        description: `Transferred ${parsedTransfer.data.amount} from "${result.from.name}" to "${result.to.name}"${transferNote ? ` · Note: ${transferNote}` : ""}`,
         monthKey: result.from.monthKey,
       });
       return apiSuccess(result);

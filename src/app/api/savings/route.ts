@@ -33,11 +33,12 @@ export async function POST(request: NextRequest) {
     }
 
     const savings = await createHiddenSavings(session.householdId, parsed.data);
+    const savingsNote = parsed.data.note?.trim();
     void logActivitySafely({
       session,
       action: "create",
       entity: "hidden_savings",
-      description: `Moved ${savings.amount} to hidden savings "${savings.title}"`,
+      description: `Moved ${savings.amount} to hidden savings "${savings.title}"${savingsNote ? ` · Note: ${savingsNote}` : ""}`,
       monthKey: savings.monthKey,
     });
     return apiSuccess({ savings }, 201);

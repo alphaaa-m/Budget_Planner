@@ -53,6 +53,7 @@ export const transferSchema = z.object({
   fromAccountId: z.string().min(1),
   toAccountId: z.string().min(1),
   amount: amountSchema,
+  note: z.string().trim().max(500).optional().default(""),
 });
 
 export const createExpenseSchema = z.object({
@@ -103,6 +104,7 @@ export const createSavingsSchema = z.object({
   date: dateSchema,
   accountId: z.string().min(1),
   monthKey: monthKeySchema.optional(),
+  note: z.string().trim().max(500).optional().default(""),
 });
 
 export const updateCategorySchema = z.object({
