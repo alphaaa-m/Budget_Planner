@@ -22,6 +22,11 @@ const DATABASE_TITLES = {
 
 const SYSTEM_CONFIG_PAGE_TITLE = "System Config";
 const DEFAULT_HOUSEHOLD_NAME = "Couple Household";
+const DB_IDS_MARKER_PREFIX = "DB_IDS::";
+const SETUP_LOCK_PREFIX = "SETUP_LOCK::";
+const SETUP_LOCK_TTL_MS = 2 * 60 * 1000;
+const SETUP_LOCK_WAIT_TIMEOUT_MS = 60 * 1000;
+const SETUP_LOCK_POLL_INTERVAL_MS = 800;
 
 export const DEFAULT_COUPLE_USERS = [
   { name: "Muneeb", username: "muneeb", password: "muneeb123" },
@@ -58,14 +63,93 @@ function richText(content: string) {
     : [];
 }
 
-async function listParentBlocks(): Promise<BlockObjectResponse[]> {
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isValidDatabaseIds(value: unknown): value is DatabaseIds {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<DatabaseIds>;
+  return Boolean(
+    candidate.households &&
+      candidate.users &&
+      candidate.accounts &&
+      candidate.categories &&
+      candidate.expenses &&
+      candidate.income &&
+      candidate.hiddenSavings,
+  );
+}
+
+function getParagraphText(block: BlockObjectResponse): string {
+  if (block.type !== "paragraph") {
+    return "";
+  }
+
+  return block.paragraph.rich_text.map((item) => item.plain_text).join("").trim();
+}
+
+function parseDatabaseIdsMarker(text: string): DatabaseIds | null {
+  const index = text.indexOf(DB_IDS_MARKER_PREFIX);
+  if (index < 0) {
+    return null;
+  }
+
+  const payload = text.slice(index + DB_IDS_MARKER_PREFIX.length).trim();
+
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    return isValidDatabaseIds(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+type SetupLockEntry = {
+  token: string;
+  timestamp: number;
+  blockId: string;
+};
+
+function parseSetupLock(text: string, blockId: string): SetupLockEntry | null {
+  if (!text.startsWith(SETUP_LOCK_PREFIX)) {
+    return null;
+  }
+
+  const payload = text.slice(SETUP_LOCK_PREFIX.length);
+  const [token, timestampString] = payload.split("::");
+  const timestamp = Number(timestampString);
+
+  if (!token || !Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  return {
+    token,
+    timestamp,
+    blockId,
+  };
+}
+
+function pickLockLeader(locks: SetupLockEntry[]): SetupLockEntry | null {
+  if (!locks.length) {
+    return null;
+  }
+
+  return [...locks].sort(
+    (left, right) => left.timestamp - right.timestamp || left.token.localeCompare(right.token),
+  )[0];
+}
+
+async function listBlockChildren(blockId: string): Promise<BlockObjectResponse[]> {
   const blocks: BlockObjectResponse[] = [];
   let cursor: string | undefined;
 
   while (true) {
     const response = await withNotionRetry(() =>
       notion.blocks.children.list({
-        block_id: normalizeNotionId(env.NOTION_PARENT_PAGE_ID),
+        block_id: blockId,
         start_cursor: cursor,
         page_size: 100,
       }),
@@ -85,6 +169,10 @@ async function listParentBlocks(): Promise<BlockObjectResponse[]> {
   }
 
   return blocks;
+}
+
+async function listParentBlocks(): Promise<BlockObjectResponse[]> {
+  return listBlockChildren(normalizeNotionId(env.NOTION_PARENT_PAGE_ID));
 }
 
 async function createDatabase(titleText: string, properties: Record<string, unknown>) {
@@ -251,68 +339,181 @@ async function ensureDatabases(): Promise<DatabaseIds> {
   return ids as DatabaseIds;
 }
 
-async function ensureSystemConfigPage(databaseIds: DatabaseIds): Promise<void> {
+async function getOrCreateSystemConfigPageId(): Promise<string> {
   const blocks = await listParentBlocks();
-  const existingConfig = blocks.find(
-    (block) =>
-      block.type === "child_page" &&
-      block.child_page.title.trim().toLowerCase() ===
-        SYSTEM_CONFIG_PAGE_TITLE.toLowerCase(),
-  );
 
-  let configPageId = existingConfig?.id;
-
-  if (!configPageId) {
-    const page = await withNotionRetry(() =>
-      notion.pages.create({
-        parent: { page_id: normalizeNotionId(env.NOTION_PARENT_PAGE_ID) },
-        properties: {
-          title: {
-            title: title(SYSTEM_CONFIG_PAGE_TITLE),
-          },
-        },
-      }),
+  const configPages = blocks
+    .filter(
+      (block) =>
+        block.type === "child_page" &&
+        block.child_page.title.trim().toLowerCase() ===
+          SYSTEM_CONFIG_PAGE_TITLE.toLowerCase(),
+    )
+    .sort(
+      (left, right) =>
+        new Date(left.created_time).getTime() - new Date(right.created_time).getTime(),
     );
 
-    if (page.object !== "page") {
-      throw new HttpError(500, "Failed to create System Config page");
-    }
-
-    configPageId = page.id;
+  if (configPages[0]) {
+    return configPages[0].id;
   }
 
-  const marker = `DB_IDS::${JSON.stringify(databaseIds)}`;
-  const existingBlocks = await withNotionRetry(() =>
-    notion.blocks.children.list({
-      block_id: configPageId,
-      page_size: 100,
+  const page = await withNotionRetry(() =>
+    notion.pages.create({
+      parent: { page_id: normalizeNotionId(env.NOTION_PARENT_PAGE_ID) },
+      properties: {
+        title: {
+          title: title(SYSTEM_CONFIG_PAGE_TITLE),
+        },
+      },
     }),
   );
 
-  const alreadyWritten = existingBlocks.results.some((block) => {
-    if (!("type" in block) || block.type !== "paragraph") {
-      return false;
+  if (page.object !== "page") {
+    throw new HttpError(500, "Failed to create System Config page");
+  }
+
+  return page.id;
+}
+
+async function readDatabaseIdsFromSystemConfig(
+  configPageId: string,
+): Promise<DatabaseIds | null> {
+  const blocks = await listBlockChildren(configPageId);
+
+  for (const block of blocks) {
+    const parsed = parseDatabaseIdsMarker(getParagraphText(block));
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+async function writeDatabaseIdsToSystemConfig(
+  configPageId: string,
+  databaseIds: DatabaseIds,
+): Promise<void> {
+  const marker = `${DB_IDS_MARKER_PREFIX}${JSON.stringify(databaseIds)}`;
+  const blocks = await listBlockChildren(configPageId);
+
+  let markerExists = false;
+
+  for (const block of blocks) {
+    const text = getParagraphText(block);
+    if (!text.includes(DB_IDS_MARKER_PREFIX)) {
+      continue;
     }
 
-    return block.paragraph.rich_text.some((item) => item.plain_text.includes("DB_IDS::"));
-  });
+    if (text === marker) {
+      markerExists = true;
+      continue;
+    }
 
-  if (!alreadyWritten) {
-    await withNotionRetry(() =>
-      notion.blocks.children.append({
-        block_id: configPageId,
-        children: [
-          {
-            object: "block",
-            type: "paragraph",
-            paragraph: {
-              rich_text: [{ type: "text", text: { content: marker } }],
-            },
-          },
-        ],
-      }),
-    );
+    await withNotionRetry(() => notion.blocks.delete({ block_id: block.id }));
   }
+
+  if (markerExists) {
+    return;
+  }
+
+  await withNotionRetry(() =>
+    notion.blocks.children.append({
+      block_id: configPageId,
+      children: [
+        {
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [{ type: "text", text: { content: marker } }],
+          },
+        },
+      ],
+    }),
+  );
+}
+
+async function readActiveSetupLocks(configPageId: string): Promise<SetupLockEntry[]> {
+  const blocks = await listBlockChildren(configPageId);
+  const now = Date.now();
+  const activeLocks: SetupLockEntry[] = [];
+
+  for (const block of blocks) {
+    const lock = parseSetupLock(getParagraphText(block), block.id);
+    if (!lock) {
+      continue;
+    }
+
+    if (now - lock.timestamp > SETUP_LOCK_TTL_MS) {
+      await withNotionRetry(() => notion.blocks.delete({ block_id: block.id }));
+      continue;
+    }
+
+    activeLocks.push(lock);
+  }
+
+  return activeLocks;
+}
+
+async function releaseSetupLock(configPageId: string, token: string): Promise<void> {
+  const blocks = await listBlockChildren(configPageId);
+
+  for (const block of blocks) {
+    const text = getParagraphText(block);
+    if (!text.startsWith(`${SETUP_LOCK_PREFIX}${token}::`)) {
+      continue;
+    }
+
+    await withNotionRetry(() => notion.blocks.delete({ block_id: block.id }));
+  }
+}
+
+async function acquireSetupLock(configPageId: string): Promise<string | null> {
+  const existingMarker = await readDatabaseIdsFromSystemConfig(configPageId);
+  if (existingMarker) {
+    return null;
+  }
+
+  const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const lockMarker = `${SETUP_LOCK_PREFIX}${token}::${Date.now()}`;
+
+  await withNotionRetry(() =>
+    notion.blocks.children.append({
+      block_id: configPageId,
+      children: [
+        {
+          object: "block",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [{ type: "text", text: { content: lockMarker } }],
+          },
+        },
+      ],
+    }),
+  );
+
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < SETUP_LOCK_WAIT_TIMEOUT_MS) {
+    const readyMarker = await readDatabaseIdsFromSystemConfig(configPageId);
+    if (readyMarker) {
+      await releaseSetupLock(configPageId, token);
+      return null;
+    }
+
+    const activeLocks = await readActiveSetupLocks(configPageId);
+    const leader = pickLockLeader(activeLocks);
+
+    if (leader?.token === token) {
+      return token;
+    }
+
+    await wait(SETUP_LOCK_POLL_INTERVAL_MS);
+  }
+
+  await releaseSetupLock(configPageId, token);
+  throw new HttpError(409, "Timed out waiting for setup lock");
 }
 
 async function ensureDefaultHousehold(databaseIds: DatabaseIds): Promise<string> {
@@ -474,17 +675,53 @@ async function ensureDefaultCategories(
 }
 
 async function runSetup(): Promise<SetupState> {
-  const databases = await ensureDatabases();
-  await ensureSystemConfigPage(databases);
+  const configPageId = await getOrCreateSystemConfigPageId();
 
-  const householdId = await ensureDefaultHousehold(databases);
-  await ensureDefaultUsers(databases, householdId);
-  await ensureDefaultCategories(databases, householdId);
+  const existingBeforeLock = await readDatabaseIdsFromSystemConfig(configPageId);
+  if (existingBeforeLock) {
+    const householdId = await ensureDefaultHousehold(existingBeforeLock);
+    await ensureDefaultUsers(existingBeforeLock, householdId);
+    await ensureDefaultCategories(existingBeforeLock, householdId);
 
-  return {
-    databases,
-    householdId,
-  };
+    return {
+      databases: existingBeforeLock,
+      householdId,
+    };
+  }
+
+  let lockToken: string | null = null;
+
+  try {
+    lockToken = await acquireSetupLock(configPageId);
+
+    const existingAfterLock = await readDatabaseIdsFromSystemConfig(configPageId);
+    if (existingAfterLock) {
+      const householdId = await ensureDefaultHousehold(existingAfterLock);
+      await ensureDefaultUsers(existingAfterLock, householdId);
+      await ensureDefaultCategories(existingAfterLock, householdId);
+
+      return {
+        databases: existingAfterLock,
+        householdId,
+      };
+    }
+
+    const databases = await ensureDatabases();
+    await writeDatabaseIdsToSystemConfig(configPageId, databases);
+
+    const householdId = await ensureDefaultHousehold(databases);
+    await ensureDefaultUsers(databases, householdId);
+    await ensureDefaultCategories(databases, householdId);
+
+    return {
+      databases,
+      householdId,
+    };
+  } finally {
+    if (lockToken) {
+      await releaseSetupLock(configPageId, lockToken);
+    }
+  }
 }
 
 export async function ensureNotionSetup(force = false): Promise<SetupState> {
