@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     }
 
     const savings = await createHiddenSavings(session.householdId, parsed.data);
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "create",
       entity: "hidden_savings",

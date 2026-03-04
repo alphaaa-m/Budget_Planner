@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Couple Monthly Budget Planner",
-  description: "Notion-powered monthly budget planner for couples",
+  description: "Supabase-powered monthly budget planner for couples",
 };
 
 export default function RootLayout({

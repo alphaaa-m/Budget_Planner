@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     }
 
     const category = await createCategory(session.householdId, parsed.data);
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "create",
       entity: "category",
@@ -70,7 +70,7 @@ export async function PATCH(request: NextRequest) {
       changes.push(`budget ${previous.budgetLimit}→${category.budgetLimit}`);
     }
 
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "update",
       entity: "category",

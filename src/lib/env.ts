@@ -1,15 +1,15 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  NOTION_API_KEY: z.string().min(1, "NOTION_API_KEY is required"),
-  NOTION_PARENT_PAGE_ID: z.string().min(1, "NOTION_PARENT_PAGE_ID is required"),
+  SUPABASE_URL: z.string().url("SUPABASE_URL must be a valid URL"),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
   AUTH_SECRET: z.string().min(24, "AUTH_SECRET must be at least 24 characters"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
 const parsed = envSchema.safeParse({
-  NOTION_API_KEY: process.env.NOTION_API_KEY,
-  NOTION_PARENT_PAGE_ID: process.env.NOTION_PARENT_PAGE_ID,
+  SUPABASE_URL: process.env.SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
   AUTH_SECRET: process.env.AUTH_SECRET,
   NODE_ENV: process.env.NODE_ENV,
 });
@@ -23,7 +23,3 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
-
-export function normalizeNotionId(value: string): string {
-  return value.replace(/-/g, "").trim();
-}

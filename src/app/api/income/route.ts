@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     }
 
     const income = await createIncome(session.householdId, parsed.data);
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "create",
       entity: "income",
@@ -77,7 +77,7 @@ export async function PATCH(request: NextRequest) {
       changes.push("account changed");
     }
 
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "update",
       entity: "income",
@@ -105,7 +105,7 @@ export async function DELETE(request: NextRequest) {
 
     const income = await getIncome(session.householdId, parsed.data.id);
     await deleteIncome(session.householdId, parsed.data.id);
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "delete",
       entity: "income",

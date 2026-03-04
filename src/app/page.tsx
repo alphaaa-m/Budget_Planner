@@ -60,6 +60,8 @@ type ActivityLogEntry = {
   monthKey?: string | null;
 };
 
+type DashboardTab = "planner" | "logs";
+
 type ApiEnvelope<T> = {
   ok: boolean;
   data: T;
@@ -98,6 +100,23 @@ type TransferFormState = {
 type BankAccountFormState = {
   name: string;
   balance: string;
+};
+
+type CategoryFormState = {
+  name: string;
+  budgetLimit: string;
+  color: string;
+};
+
+type DashboardPayload = {
+  monthKey: string;
+  accounts: AccountRecord[];
+  categories: CategoryRecord[];
+  expenses: ExpenseRecord[];
+  income: IncomeRecord[];
+  savings: HiddenSavingsRecord[];
+  allExpenses: ExpenseRecord[];
+  allAccounts: AccountRecord[];
 };
 
 async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
@@ -171,6 +190,7 @@ export default function Home() {
 
   const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [activeTab, setActiveTab] = useState<DashboardTab>("planner");
 
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -223,6 +243,11 @@ export default function Home() {
     name: "",
     balance: "",
   });
+  const [categoryForm, setCategoryForm] = useState<CategoryFormState>({
+    name: "",
+    budgetLimit: "0",
+    color: "default",
+  });
 
   const refreshSession = useCallback(async () => {
     const response = await fetch("/api/auth/me", { cache: "no-store" });
@@ -255,54 +280,21 @@ export default function Home() {
       setError(null);
 
       try {
-        await apiRequest<{ monthKey: string; accounts: AccountRecord[] }>("/api/month", {
-          method: "POST",
-          body: JSON.stringify({
-            monthKey: targetMonth,
-            carryForward: options?.carryForward ?? carryForward,
-            duplicatePrevious: options?.duplicatePrevious ?? false,
-          }),
+        const params = new URLSearchParams({
+          monthKey: targetMonth,
+          carryForward: String(options?.carryForward ?? carryForward),
+          duplicatePrevious: String(options?.duplicatePrevious ?? false),
         });
 
-        const [
-          accountsData,
-          categoriesData,
-          expenseData,
-          incomeData,
-          savingsData,
-          allExpenseData,
-          allAccountData,
-          activityData,
-        ] =
-          await Promise.all([
-            apiRequest<{ accounts: AccountRecord[] }>(
-              `/api/accounts?monthKey=${encodeURIComponent(targetMonth)}`,
-            ),
-            apiRequest<{ categories: CategoryRecord[] }>("/api/categories"),
-            apiRequest<{ expenses: ExpenseRecord[] }>(
-              `/api/expenses?monthKey=${encodeURIComponent(targetMonth)}`,
-            ),
-            apiRequest<{ income: IncomeRecord[] }>(
-              `/api/income?monthKey=${encodeURIComponent(targetMonth)}`,
-            ),
-            apiRequest<{ savings: HiddenSavingsRecord[] }>(
-              `/api/savings?monthKey=${encodeURIComponent(targetMonth)}`,
-            ),
-            apiRequest<{ expenses: ExpenseRecord[] }>("/api/expenses?all=true"),
-            apiRequest<{ accounts: AccountRecord[] }>("/api/accounts?all=true"),
-            apiRequest<{ logs: ActivityLogEntry[] }>("/api/activity?limit=30").catch(() => ({
-              logs: [],
-            })),
-          ]);
+        const dashboard = await apiRequest<DashboardPayload>(`/api/dashboard?${params.toString()}`);
 
-        setAccounts(accountsData.accounts);
-        setCategories(categoriesData.categories);
-        setExpenses(expenseData.expenses);
-        setIncome(incomeData.income);
-        setSavings(savingsData.savings);
-        setAllExpenses(allExpenseData.expenses);
-        setAllAccounts(allAccountData.accounts);
-        setActivityLogs(activityData.logs);
+        setAccounts(dashboard.accounts);
+        setCategories(dashboard.categories);
+        setExpenses(dashboard.expenses);
+        setIncome(dashboard.income);
+        setSavings(dashboard.savings);
+        setAllExpenses(dashboard.allExpenses);
+        setAllAccounts(dashboard.allAccounts);
       } catch (apiError) {
         setError(apiError instanceof Error ? apiError.message : "Failed to load dashboard data");
       } finally {
@@ -312,12 +304,25 @@ export default function Home() {
     [user, carryForward],
   );
 
+  const loadActivityLogs = useCallback(async () => {
+    if (!user) {
+      return;
+    }
+
+    try {
+      const activityData = await apiRequest<{ logs: ActivityLogEntry[] }>("/api/activity?limit=30");
+      setActivityLogs(activityData.logs);
+    } catch {
+      setActivityLogs([]);
+    }
+  }, [user]);
+
   useEffect(() => {
     let active = true;
 
     async function initialize() {
       try {
-        await apiRequest("/api/setup-notion", { method: "POST" });
+        await apiRequest("/api/setup", { method: "POST" });
 
         if (!active) {
           return;
@@ -329,7 +334,7 @@ export default function Home() {
           return;
         }
 
-        setError(setupError instanceof Error ? setupError.message : "Failed to setup Notion workspace");
+        setError(setupError instanceof Error ? setupError.message : "Failed to setup workspace");
       } finally {
         if (active) {
           setInitializing(false);
@@ -345,12 +350,20 @@ export default function Home() {
   }, [refreshSession]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || activeTab !== "planner") {
       return;
     }
 
     void loadMonthData(monthKey, { carryForward, duplicatePrevious: false });
-  }, [user, monthKey, carryForward, loadMonthData]);
+  }, [user, monthKey, carryForward, activeTab, loadMonthData]);
+
+  useEffect(() => {
+    if (!user || activeTab !== "logs") {
+      return;
+    }
+
+    void loadActivityLogs();
+  }, [activeTab, user, loadActivityLogs]);
 
   useEffect(() => {
     setBudgetDrafts(
@@ -648,6 +661,36 @@ export default function Home() {
     }
   }
 
+  async function handleCreateCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+
+    try {
+      await apiRequest("/api/categories", {
+        method: "POST",
+        body: JSON.stringify({
+          name: categoryForm.name,
+          color: categoryForm.color,
+          budgetLimit: Number(categoryForm.budgetLimit || "0"),
+        }),
+      });
+
+      setCategoryForm((previous) => ({
+        ...previous,
+        name: "",
+        budgetLimit: "0",
+      }));
+
+      await loadMonthData(monthKey);
+    } catch (operationError) {
+      setError(
+        operationError instanceof Error
+          ? operationError.message
+          : "Unable to create category",
+      );
+    }
+  }
+
   async function handleCreateBankAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -807,7 +850,11 @@ export default function Home() {
             <ThemeToggle />
             <button
               type="button"
-              onClick={() => void loadMonthData(monthKey)}
+              onClick={() =>
+                activeTab === "logs"
+                  ? void loadActivityLogs()
+                  : void loadMonthData(monthKey)
+              }
               className="w-full rounded-xl border border-slate-300/70 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 sm:w-auto dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
             >
               Refresh
@@ -861,10 +908,37 @@ export default function Home() {
             {error}
           </p>
         ) : null}
+
+        <div className="mt-4 inline-flex w-full rounded-xl border border-slate-300/60 bg-white p-1 sm:w-auto dark:border-slate-700/60 dark:bg-slate-950">
+          <button
+            type="button"
+            onClick={() => setActiveTab("planner")}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold sm:flex-none ${
+              activeTab === "planner"
+                ? "bg-sky-600 text-white"
+                : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            }`}
+          >
+            Planner
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("logs")}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold sm:flex-none ${
+              activeTab === "logs"
+                ? "bg-sky-600 text-white"
+                : "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            }`}
+          >
+            Logs
+          </button>
+        </div>
       </motion.section>
 
       {loadingData ? <LoadingSkeleton /> : null}
 
+      {activeTab === "planner" ? (
+        <>
       <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <SummaryCard label="Total Income" value={formatPkr(totalIncome)} />
         <SummaryCard label="Total Expenses" value={formatPkr(totalExpenses)} />
@@ -1317,8 +1391,35 @@ export default function Home() {
 
       <section className="rounded-2xl border border-white/50 bg-white/70 p-4 shadow-sm backdrop-blur-xl dark:border-slate-700/60 dark:bg-slate-900/70">
         <h3 className="mb-3 font-semibold text-slate-900 dark:text-slate-100">Budget Controls</h3>
+        <form
+          onSubmit={handleCreateCategory}
+          className="mb-4 grid gap-2 rounded-xl border border-slate-200/70 bg-white p-3 dark:border-slate-700/70 dark:bg-slate-950 sm:grid-cols-[1fr_160px_auto]"
+        >
+          <input
+            placeholder="Category name"
+            required
+            value={categoryForm.name}
+            onChange={(event) =>
+              setCategoryForm((previous) => ({ ...previous, name: event.target.value }))
+            }
+            className="w-full rounded-xl border border-slate-300/60 bg-white px-3 py-2 text-sm dark:border-slate-700/60 dark:bg-slate-950"
+          />
+          <input
+            placeholder="Budget limit"
+            type="number"
+            min={0}
+            value={categoryForm.budgetLimit}
+            onChange={(event) =>
+              setCategoryForm((previous) => ({ ...previous, budgetLimit: event.target.value }))
+            }
+            className="w-full rounded-xl border border-slate-300/60 bg-white px-3 py-2 text-sm dark:border-slate-700/60 dark:bg-slate-950"
+          />
+          <button className="rounded-xl bg-violet-600 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-500">
+            Add Category
+          </button>
+        </form>
         {categories.length === 0 ? (
-          <EmptyState label="No categories available." />
+          <EmptyState label="No categories yet. Add one to start planning." />
         ) : (
           <div className="space-y-3">
             {categories.map((category) => {
@@ -1512,6 +1613,8 @@ export default function Home() {
         </div>
       </section>
 
+        </>
+      ) : (
       <section className="rounded-2xl border border-white/50 bg-white/70 p-4 shadow-sm backdrop-blur-xl dark:border-slate-700/60 dark:bg-slate-900/70">
         <h3 className="mb-3 font-semibold text-slate-900 dark:text-slate-100">Recent Activity</h3>
         {activityLogs.length === 0 ? (
@@ -1535,6 +1638,7 @@ export default function Home() {
           </div>
         )}
       </section>
+      )}
     </main>
   );
 }

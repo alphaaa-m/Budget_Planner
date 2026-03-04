@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
     }
 
     const account = await createAccount(session.householdId, parsed.data);
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "create",
       entity: "account",
@@ -67,7 +67,7 @@ export async function PATCH(request: NextRequest) {
       }
 
       const result = await transferBetweenAccounts(session.householdId, parsedTransfer.data);
-      await logActivitySafely({
+      void logActivitySafely({
         session,
         action: "transfer",
         entity: "account",
@@ -96,7 +96,7 @@ export async function PATCH(request: NextRequest) {
       changes.push(`balance ${previous.balance}→${account.balance}`);
     }
 
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "update",
       entity: "account",
@@ -124,7 +124,7 @@ export async function DELETE(request: NextRequest) {
 
     const account = await getAccount(session.householdId, parsed.data.id);
     await deleteAccount(session.householdId, parsed.data.id);
-    await logActivitySafely({
+    void logActivitySafely({
       session,
       action: "delete",
       entity: "account",

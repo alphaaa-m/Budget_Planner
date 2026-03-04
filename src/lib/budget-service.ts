@@ -1,8 +1,6 @@
-import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints";
 import { HttpError } from "@/lib/api";
 import { deriveMonthKeyFromDate, previousMonthKey } from "@/lib/format";
-import { notion, queryAllPages, withNotionRetry } from "@/lib/notion";
-import { ensureNotionSetup } from "@/lib/notion-setup";
+import { supabaseAdmin } from "@/lib/supabase";
 import type {
   AccountRecord,
   AccountType,
@@ -19,58 +17,83 @@ const DEFAULT_ACCOUNT_TEMPLATES: Array<{ name: string; type: AccountType }> = [
   { name: "Meezan", type: "Bank" },
   { name: "HBL", type: "Bank" },
   { name: "MCB", type: "Bank" },
-  { name: "Cash (Muneeb, Ayesha)", type: "Cash" },
+  { name: "Cash (Muneeb)", type: "Cash" },
+  { name: "Cash (Ayesha)", type: "Cash" },
 ];
 
-function titleValue(content: string) {
-  return [{ type: "text" as const, text: { content } }];
+type AccountRow = {
+  id: string;
+  name: string;
+  type: string;
+  balance: number | string;
+  month_key: string;
+  household_id: string;
+};
+
+type CategoryRow = {
+  id: string;
+  name: string;
+  color: string;
+  budget_limit: number | string;
+  household_id: string;
+};
+
+type ExpenseRow = {
+  id: string;
+  title: string;
+  amount: number | string;
+  date: string;
+  account_id: string;
+  category_id: string;
+  month_key: string;
+  note: string | null;
+  household_id: string;
+};
+
+type IncomeRow = {
+  id: string;
+  title: string;
+  amount: number | string;
+  date: string;
+  account_id: string;
+  month_key: string;
+  household_id: string;
+};
+
+type HiddenSavingsRow = {
+  id: string;
+  title: string;
+  amount: number | string;
+  date: string;
+  month_key: string;
+  household_id: string;
+};
+
+type UserRow = {
+  id: string;
+  name: string;
+  username: string;
+  password_hash: string;
+  household_id: string;
+};
+
+function toNumber(value: unknown): number {
+  const numeric = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function richTextValue(content: string) {
-  return content
-    ? [{ type: "text" as const, text: { content } }]
-    : [];
+function toDateOnly(value: unknown): string {
+  return typeof value === "string" ? value.slice(0, 10) : "";
 }
 
-function readTitle(page: PageObjectResponse, propertyName: string): string {
-  const property = page.properties[propertyName];
-  if (!property || property.type !== "title") {
-    return "";
+function normalizeUsername(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function ensureNoSupabaseError(error: { message?: string; code?: string } | null, context: string): void {
+  if (error) {
+    throw new HttpError(500, `${context}: ${error.message ?? "Unknown Supabase error"}`);
   }
-  return property.title.map((item) => item.plain_text).join("").trim();
-}
-
-function readRichText(page: PageObjectResponse, propertyName: string): string {
-  const property = page.properties[propertyName];
-  if (!property || property.type !== "rich_text") {
-    return "";
-  }
-  return property.rich_text.map((item) => item.plain_text).join("").trim();
-}
-
-function readNumber(page: PageObjectResponse, propertyName: string): number {
-  const property = page.properties[propertyName];
-  if (!property || property.type !== "number") {
-    return 0;
-  }
-  return property.number ?? 0;
-}
-
-function readDate(page: PageObjectResponse, propertyName: string): string {
-  const property = page.properties[propertyName];
-  if (!property || property.type !== "date") {
-    return "";
-  }
-
-  return property.date?.start?.slice(0, 10) ?? "";
-}
-
-function readRelation(page: PageObjectResponse, propertyName: string): string[] {
-  const property = page.properties[propertyName];
-  if (!property || property.type !== "relation") {
-    return [];
-  }
-  return property.relation.map((item) => item.id);
 }
 
 function asAccountType(value: string): AccountType {
@@ -87,92 +110,72 @@ function asAccountType(value: string): AccountType {
   return "Other";
 }
 
-function mapAccount(page: PageObjectResponse): AccountRecord {
-  const typeProperty = page.properties.Type;
-  const typeName =
-    typeProperty && typeProperty.type === "select"
-      ? typeProperty.select?.name ?? "Other"
-      : "Other";
-
+function mapAccount(row: AccountRow): AccountRecord {
   return {
-    id: page.id,
-    name: readTitle(page, "Name"),
-    type: asAccountType(typeName),
-    balance: readNumber(page, "Balance"),
-    monthKey: readRichText(page, "Month Key"),
-    householdId: readRelation(page, "Household")[0] ?? "",
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    type: asAccountType(String(row.type ?? "Other")),
+    balance: toNumber(row.balance),
+    monthKey: String(row.month_key ?? ""),
+    householdId: String(row.household_id ?? ""),
   };
 }
 
-function mapCategory(page: PageObjectResponse): CategoryRecord {
-  const colorProperty = page.properties.Color;
-  const color =
-    colorProperty && colorProperty.type === "select"
-      ? colorProperty.select?.name ?? "default"
-      : "default";
-
+function mapCategory(row: CategoryRow): CategoryRecord {
   return {
-    id: page.id,
-    name: readTitle(page, "Name"),
-    color,
-    budgetLimit: readNumber(page, "Budget Limit"),
-    householdId: readRelation(page, "Household")[0] ?? "",
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    color: String(row.color ?? "default"),
+    budgetLimit: toNumber(row.budget_limit),
+    householdId: String(row.household_id ?? ""),
   };
 }
 
-function mapExpense(page: PageObjectResponse): ExpenseRecord {
+function mapExpense(row: ExpenseRow): ExpenseRecord {
   return {
-    id: page.id,
-    title: readTitle(page, "Title"),
-    amount: readNumber(page, "Amount"),
-    date: readDate(page, "Date"),
-    accountId: readRelation(page, "Account")[0] ?? "",
-    categoryId: readRelation(page, "Category")[0] ?? "",
-    monthKey: readRichText(page, "Month Key"),
-    note: readRichText(page, "Note"),
-    householdId: readRelation(page, "Household")[0] ?? "",
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    amount: toNumber(row.amount),
+    date: toDateOnly(row.date),
+    accountId: String(row.account_id ?? ""),
+    categoryId: String(row.category_id ?? ""),
+    monthKey: String(row.month_key ?? ""),
+    note: String(row.note ?? ""),
+    householdId: String(row.household_id ?? ""),
   };
 }
 
-function mapIncome(page: PageObjectResponse): IncomeRecord {
+function mapIncome(row: IncomeRow): IncomeRecord {
   return {
-    id: page.id,
-    title: readTitle(page, "Title"),
-    amount: readNumber(page, "Amount"),
-    date: readDate(page, "Date"),
-    accountId: readRelation(page, "Account")[0] ?? "",
-    monthKey: readRichText(page, "Month Key"),
-    householdId: readRelation(page, "Household")[0] ?? "",
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    amount: toNumber(row.amount),
+    date: toDateOnly(row.date),
+    accountId: String(row.account_id ?? ""),
+    monthKey: String(row.month_key ?? ""),
+    householdId: String(row.household_id ?? ""),
   };
 }
 
-function mapSavings(page: PageObjectResponse): HiddenSavingsRecord {
+function mapSavings(row: HiddenSavingsRow): HiddenSavingsRecord {
   return {
-    id: page.id,
-    title: readTitle(page, "Title"),
-    amount: readNumber(page, "Amount"),
-    date: readDate(page, "Date"),
-    monthKey: readRichText(page, "Month Key"),
-    householdId: readRelation(page, "Household")[0] ?? "",
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    amount: toNumber(row.amount),
+    date: toDateOnly(row.date),
+    monthKey: String(row.month_key ?? ""),
+    householdId: String(row.household_id ?? ""),
   };
 }
 
-function mapUser(page: PageObjectResponse): UserRecord {
+function mapUser(row: UserRow): UserRecord {
   return {
-    id: page.id,
-    name: readTitle(page, "Name"),
-    username: readRichText(page, "Username"),
-    passwordHash: readRichText(page, "Password Hash"),
-    householdId: readRelation(page, "Household")[0] ?? "",
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    username: normalizeUsername(String(row.username ?? "")),
+    passwordHash: String(row.password_hash ?? ""),
+    householdId: String(row.household_id ?? ""),
   };
-}
-
-async function getPageOrThrow(pageId: string): Promise<PageObjectResponse> {
-  const page = await withNotionRetry(() => notion.pages.retrieve({ page_id: pageId }));
-  if (page.object !== "page" || !("properties" in page)) {
-    throw new HttpError(404, "Entity not found");
-  }
-  return page as PageObjectResponse;
 }
 
 async function updateAccountBalance(accountId: string, nextBalance: number): Promise<void> {
@@ -180,167 +183,153 @@ async function updateAccountBalance(accountId: string, nextBalance: number): Pro
     throw new HttpError(400, "Insufficient account balance");
   }
 
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: accountId,
-      properties: {
-        Balance: { number: nextBalance },
-      },
-    }),
-  );
+  const { error } = await supabaseAdmin
+    .from("accounts")
+    .update({ balance: nextBalance })
+    .eq("id", accountId);
+
+  ensureNoSupabaseError(error, "Failed to update account balance");
 }
 
 export async function findUserByUsername(username: string): Promise<UserRecord | null> {
-  const setup = await ensureNotionSetup();
-  const users = await queryAllPages({
-    database_id: setup.databases.users,
-    filter: {
-      property: "Username",
-      rich_text: {
-        equals: username,
-      },
-    },
-  });
+  const { data, error } = await supabaseAdmin
+    .from("app_users")
+    .select("id, name, username, password_hash, household_id")
+    .eq("username", normalizeUsername(username))
+    .maybeSingle();
 
-  if (!users[0]) {
+  ensureNoSupabaseError(error, "Failed to fetch user");
+
+  if (!data) {
     return null;
   }
 
-  return mapUser(users[0]);
+  return mapUser(data as UserRow);
 }
 
 export async function listAccounts(
   householdId: string,
   monthKey?: string,
 ): Promise<AccountRecord[]> {
-  const setup = await ensureNotionSetup();
-  const filter = monthKey
-    ? {
-        and: [
-          { property: "Household", relation: { contains: householdId } },
-          { property: "Month Key", rich_text: { equals: monthKey } },
-        ],
-      }
-    : { property: "Household", relation: { contains: householdId } };
+  let query = supabaseAdmin
+    .from("accounts")
+    .select("id, name, type, balance, month_key, household_id")
+    .eq("household_id", householdId);
 
-  const pages = await queryAllPages({
-    database_id: setup.databases.accounts,
-    filter: filter as never,
-  });
+  if (monthKey) {
+    query = query.eq("month_key", monthKey);
+  }
 
-  return pages.map(mapAccount).sort((a, b) => a.name.localeCompare(b.name));
+  const { data, error } = await query;
+  ensureNoSupabaseError(error, "Failed to list accounts");
+
+  return (data as AccountRow[] | null ?? [])
+    .map(mapAccount)
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function listCategories(householdId: string): Promise<CategoryRecord[]> {
-  const setup = await ensureNotionSetup();
+  const { data, error } = await supabaseAdmin
+    .from("categories")
+    .select("id, name, color, budget_limit, household_id")
+    .eq("household_id", householdId);
 
-  const pages = await queryAllPages({
-    database_id: setup.databases.categories,
-    filter: {
-      property: "Household",
-      relation: { contains: householdId },
-    },
-  });
+  ensureNoSupabaseError(error, "Failed to list categories");
 
-  return pages.map(mapCategory).sort((a, b) => a.name.localeCompare(b.name));
+  return (data as CategoryRow[] | null ?? [])
+    .map(mapCategory)
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function listExpenses(
   householdId: string,
   monthKey?: string,
 ): Promise<ExpenseRecord[]> {
-  const setup = await ensureNotionSetup();
+  let query = supabaseAdmin
+    .from("expenses")
+    .select("id, title, amount, date, account_id, category_id, month_key, note, household_id")
+    .eq("household_id", householdId);
 
-  const filter = monthKey
-    ? {
-        and: [
-          { property: "Household", relation: { contains: householdId } },
-          { property: "Month Key", rich_text: { equals: monthKey } },
-        ],
-      }
-    : { property: "Household", relation: { contains: householdId } };
+  if (monthKey) {
+    query = query.eq("month_key", monthKey);
+  }
 
-  const pages = await queryAllPages({
-    database_id: setup.databases.expenses,
-    filter: filter as never,
-  });
+  const { data, error } = await query;
+  ensureNoSupabaseError(error, "Failed to list expenses");
 
-  return pages
+  return (data as ExpenseRow[] | null ?? [])
     .map(mapExpense)
-    .sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);
+    .sort((left, right) => right.date.localeCompare(left.date) || right.amount - left.amount);
 }
 
 export async function listIncome(
   householdId: string,
   monthKey?: string,
 ): Promise<IncomeRecord[]> {
-  const setup = await ensureNotionSetup();
+  let query = supabaseAdmin
+    .from("income")
+    .select("id, title, amount, date, account_id, month_key, household_id")
+    .eq("household_id", householdId);
 
-  const filter = monthKey
-    ? {
-        and: [
-          { property: "Household", relation: { contains: householdId } },
-          { property: "Month Key", rich_text: { equals: monthKey } },
-        ],
-      }
-    : { property: "Household", relation: { contains: householdId } };
+  if (monthKey) {
+    query = query.eq("month_key", monthKey);
+  }
 
-  const pages = await queryAllPages({
-    database_id: setup.databases.income,
-    filter: filter as never,
-  });
+  const { data, error } = await query;
+  ensureNoSupabaseError(error, "Failed to list income");
 
-  return pages
+  return (data as IncomeRow[] | null ?? [])
     .map(mapIncome)
-    .sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);
+    .sort((left, right) => right.date.localeCompare(left.date) || right.amount - left.amount);
 }
 
 export async function listHiddenSavings(
   householdId: string,
   monthKey?: string,
 ): Promise<HiddenSavingsRecord[]> {
-  const setup = await ensureNotionSetup();
+  let query = supabaseAdmin
+    .from("hidden_savings")
+    .select("id, title, amount, date, month_key, household_id")
+    .eq("household_id", householdId);
 
-  const filter = monthKey
-    ? {
-        and: [
-          { property: "Household", relation: { contains: householdId } },
-          { property: "Month Key", rich_text: { equals: monthKey } },
-        ],
-      }
-    : { property: "Household", relation: { contains: householdId } };
+  if (monthKey) {
+    query = query.eq("month_key", monthKey);
+  }
 
-  const pages = await queryAllPages({
-    database_id: setup.databases.hiddenSavings,
-    filter: filter as never,
-  });
+  const { data, error } = await query;
+  ensureNoSupabaseError(error, "Failed to list hidden savings");
 
-  return pages
+  return (data as HiddenSavingsRow[] | null ?? [])
     .map(mapSavings)
-    .sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);
+    .sort((left, right) => right.date.localeCompare(left.date) || right.amount - left.amount);
 }
 
 export async function createAccount(
   householdId: string,
   input: { name: string; type: AccountType; balance: number; monthKey: string },
 ): Promise<AccountRecord> {
-  const setup = await ensureNotionSetup();
+  const { data, error } = await supabaseAdmin
+    .from("accounts")
+    .insert({
+      household_id: householdId,
+      name: input.name,
+      type: input.type,
+      balance: input.balance,
+      month_key: input.monthKey,
+    })
+    .select("id, name, type, balance, month_key, household_id")
+    .single();
 
-  const created = await withNotionRetry(() =>
-    notion.pages.create({
-      parent: { database_id: setup.databases.accounts },
-      properties: {
-        Name: { title: titleValue(input.name) },
-        Type: { select: { name: input.type } },
-        Balance: { number: input.balance },
-        Household: { relation: [{ id: householdId }] },
-        "Month Key": { rich_text: richTextValue(input.monthKey) },
-      },
-    }),
-  );
+  if (error?.code === "23505") {
+    throw new HttpError(409, "An account with this name already exists for this month");
+  }
 
-  const page = await getPageOrThrow(created.id);
-  return mapAccount(page);
+  if (error?.code === "23503") {
+    throw new HttpError(401, "Session household is invalid. Please logout and login again.");
+  }
+
+  ensureNoSupabaseError(error, "Failed to create account");
+  return mapAccount(data as AccountRow);
 }
 
 export async function updateAccount(
@@ -349,16 +338,21 @@ export async function updateAccount(
 ): Promise<AccountRecord> {
   const account = await getAccount(householdId, input.id);
 
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: account.id,
-      properties: {
-        ...(input.name ? { Name: { title: titleValue(input.name) } } : {}),
-        ...(input.type ? { Type: { select: { name: input.type } } } : {}),
-        ...(typeof input.balance === "number" ? { Balance: { number: input.balance } } : {}),
-      },
-    }),
-  );
+  const patch: Record<string, unknown> = {};
+  if (input.name) {
+    patch.name = input.name;
+  }
+  if (input.type) {
+    patch.type = input.type;
+  }
+  if (typeof input.balance === "number") {
+    patch.balance = input.balance;
+  }
+
+  if (Object.keys(patch).length > 0) {
+    const { error } = await supabaseAdmin.from("accounts").update(patch).eq("id", account.id);
+    ensureNoSupabaseError(error, "Failed to update account");
+  }
 
   return getAccount(householdId, account.id);
 }
@@ -366,21 +360,32 @@ export async function updateAccount(
 export async function deleteAccount(householdId: string, accountId: string): Promise<void> {
   await getAccount(householdId, accountId);
 
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: accountId,
-      archived: true,
-    }),
-  );
+  const { error } = await supabaseAdmin.from("accounts").delete().eq("id", accountId);
+
+  if (error?.code === "23503") {
+    throw new HttpError(400, "Cannot delete this account because it has linked transactions");
+  }
+
+  ensureNoSupabaseError(error, "Failed to delete account");
 }
 
 export async function getAccount(
   householdId: string,
   accountId: string,
 ): Promise<AccountRecord> {
-  const page = await getPageOrThrow(accountId);
-  const account = mapAccount(page);
+  const { data, error } = await supabaseAdmin
+    .from("accounts")
+    .select("id, name, type, balance, month_key, household_id")
+    .eq("id", accountId)
+    .maybeSingle();
 
+  ensureNoSupabaseError(error, "Failed to fetch account");
+
+  if (!data) {
+    throw new HttpError(404, "Account not found");
+  }
+
+  const account = mapAccount(data as AccountRow);
   if (account.householdId !== householdId) {
     throw new HttpError(403, "Account access denied");
   }
@@ -392,9 +397,19 @@ export async function getCategory(
   householdId: string,
   categoryId: string,
 ): Promise<CategoryRecord> {
-  const page = await getPageOrThrow(categoryId);
-  const category = mapCategory(page);
+  const { data, error } = await supabaseAdmin
+    .from("categories")
+    .select("id, name, color, budget_limit, household_id")
+    .eq("id", categoryId)
+    .maybeSingle();
 
+  ensureNoSupabaseError(error, "Failed to fetch category");
+
+  if (!data) {
+    throw new HttpError(404, "Category not found");
+  }
+
+  const category = mapCategory(data as CategoryRow);
   if (category.householdId !== householdId) {
     throw new HttpError(403, "Category access denied");
   }
@@ -435,22 +450,23 @@ export async function createCategory(
   householdId: string,
   input: { name: string; color: string; budgetLimit: number },
 ): Promise<CategoryRecord> {
-  const setup = await ensureNotionSetup();
+  const { data, error } = await supabaseAdmin
+    .from("categories")
+    .insert({
+      household_id: householdId,
+      name: input.name,
+      color: input.color,
+      budget_limit: input.budgetLimit,
+    })
+    .select("id, name, color, budget_limit, household_id")
+    .single();
 
-  const created = await withNotionRetry(() =>
-    notion.pages.create({
-      parent: { database_id: setup.databases.categories },
-      properties: {
-        Name: { title: titleValue(input.name) },
-        Color: { select: { name: input.color } },
-        "Budget Limit": { number: input.budgetLimit },
-        Household: { relation: [{ id: householdId }] },
-      },
-    }),
-  );
+  if (error?.code === "23505") {
+    throw new HttpError(409, "Category already exists");
+  }
 
-  const page = await getPageOrThrow(created.id);
-  return mapCategory(page);
+  ensureNoSupabaseError(error, "Failed to create category");
+  return mapCategory(data as CategoryRow);
 }
 
 export async function updateCategory(
@@ -459,30 +475,42 @@ export async function updateCategory(
 ): Promise<CategoryRecord> {
   const category = await getCategory(householdId, input.id);
 
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: category.id,
-      properties: {
-        ...(input.name ? { Name: { title: titleValue(input.name) } } : {}),
-        ...(input.color ? { Color: { select: { name: input.color } } } : {}),
-        ...(typeof input.budgetLimit === "number"
-          ? { "Budget Limit": { number: input.budgetLimit } }
-          : {}),
-      },
-    }),
-  );
+  const patch: Record<string, unknown> = {};
+  if (input.name) {
+    patch.name = input.name;
+  }
+  if (input.color) {
+    patch.color = input.color;
+  }
+  if (typeof input.budgetLimit === "number") {
+    patch.budget_limit = input.budgetLimit;
+  }
 
-  const page = await getPageOrThrow(category.id);
-  return mapCategory(page);
+  if (Object.keys(patch).length > 0) {
+    const { error } = await supabaseAdmin.from("categories").update(patch).eq("id", category.id);
+    ensureNoSupabaseError(error, "Failed to update category");
+  }
+
+  return getCategory(householdId, category.id);
 }
 
 export async function getExpense(
   householdId: string,
   expenseId: string,
 ): Promise<ExpenseRecord> {
-  const page = await getPageOrThrow(expenseId);
-  const expense = mapExpense(page);
+  const { data, error } = await supabaseAdmin
+    .from("expenses")
+    .select("id, title, amount, date, account_id, category_id, month_key, note, household_id")
+    .eq("id", expenseId)
+    .maybeSingle();
 
+  ensureNoSupabaseError(error, "Failed to fetch expense");
+
+  if (!data) {
+    throw new HttpError(404, "Expense not found");
+  }
+
+  const expense = mapExpense(data as ExpenseRow);
   if (expense.householdId !== householdId) {
     throw new HttpError(403, "Expense access denied");
   }
@@ -502,7 +530,6 @@ export async function createExpense(
     note?: string;
   },
 ): Promise<ExpenseRecord> {
-  const setup = await ensureNotionSetup();
   const account = await getAccount(householdId, input.accountId);
   await getCategory(householdId, input.categoryId);
 
@@ -512,25 +539,25 @@ export async function createExpense(
 
   const resolvedMonthKey = input.monthKey || deriveMonthKeyFromDate(input.date);
 
-  const created = await withNotionRetry(() =>
-    notion.pages.create({
-      parent: { database_id: setup.databases.expenses },
-      properties: {
-        Title: { title: titleValue(input.title) },
-        Amount: { number: input.amount },
-        Date: { date: { start: input.date } },
-        Account: { relation: [{ id: input.accountId }] },
-        Category: { relation: [{ id: input.categoryId }] },
-        "Month Key": { rich_text: richTextValue(resolvedMonthKey) },
-        Note: { rich_text: richTextValue(input.note ?? "") },
-        Household: { relation: [{ id: householdId }] },
-      },
-    }),
-  );
+  const { data, error } = await supabaseAdmin
+    .from("expenses")
+    .insert({
+      household_id: householdId,
+      title: input.title,
+      amount: input.amount,
+      date: input.date,
+      account_id: input.accountId,
+      category_id: input.categoryId,
+      month_key: resolvedMonthKey,
+      note: input.note ?? "",
+    })
+    .select("id, title, amount, date, account_id, category_id, month_key, note, household_id")
+    .single();
+
+  ensureNoSupabaseError(error, "Failed to create expense");
 
   await updateAccountBalance(account.id, account.balance - input.amount);
-  const page = await getPageOrThrow(created.id);
-  return mapExpense(page);
+  return mapExpense(data as ExpenseRow);
 }
 
 export async function updateExpense(
@@ -554,35 +581,38 @@ export async function updateExpense(
   if (existing.accountId === input.accountId) {
     const account = await getAccount(householdId, existing.accountId);
     const nextBalance = account.balance + existing.amount - input.amount;
+
     if (nextBalance < 0) {
       throw new HttpError(400, "Insufficient account balance");
     }
+
     await updateAccountBalance(account.id, nextBalance);
   } else {
     const oldAccount = await getAccount(householdId, existing.accountId);
     const newAccount = await getAccount(householdId, input.accountId);
 
-    await updateAccountBalance(oldAccount.id, oldAccount.balance + existing.amount);
     if (newAccount.balance < input.amount) {
       throw new HttpError(400, "Insufficient destination account balance");
     }
+
+    await updateAccountBalance(oldAccount.id, oldAccount.balance + existing.amount);
     await updateAccountBalance(newAccount.id, newAccount.balance - input.amount);
   }
 
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: input.id,
-      properties: {
-        Title: { title: titleValue(input.title) },
-        Amount: { number: input.amount },
-        Date: { date: { start: input.date } },
-        Account: { relation: [{ id: input.accountId }] },
-        Category: { relation: [{ id: input.categoryId }] },
-        "Month Key": { rich_text: richTextValue(resolvedMonthKey) },
-        Note: { rich_text: richTextValue(input.note ?? "") },
-      },
-    }),
-  );
+  const { error } = await supabaseAdmin
+    .from("expenses")
+    .update({
+      title: input.title,
+      amount: input.amount,
+      date: input.date,
+      account_id: input.accountId,
+      category_id: input.categoryId,
+      month_key: resolvedMonthKey,
+      note: input.note ?? "",
+    })
+    .eq("id", input.id);
+
+  ensureNoSupabaseError(error, "Failed to update expense");
 
   return getExpense(householdId, input.id);
 }
@@ -592,21 +622,28 @@ export async function deleteExpense(householdId: string, expenseId: string): Pro
   const account = await getAccount(householdId, expense.accountId);
 
   await updateAccountBalance(account.id, account.balance + expense.amount);
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: expense.id,
-      archived: true,
-    }),
-  );
+
+  const { error } = await supabaseAdmin.from("expenses").delete().eq("id", expense.id);
+  ensureNoSupabaseError(error, "Failed to delete expense");
 }
 
 export async function getIncome(
   householdId: string,
   incomeId: string,
 ): Promise<IncomeRecord> {
-  const page = await getPageOrThrow(incomeId);
-  const income = mapIncome(page);
+  const { data, error } = await supabaseAdmin
+    .from("income")
+    .select("id, title, amount, date, account_id, month_key, household_id")
+    .eq("id", incomeId)
+    .maybeSingle();
 
+  ensureNoSupabaseError(error, "Failed to fetch income");
+
+  if (!data) {
+    throw new HttpError(404, "Income not found");
+  }
+
+  const income = mapIncome(data as IncomeRow);
   if (income.householdId !== householdId) {
     throw new HttpError(403, "Income access denied");
   }
@@ -624,27 +661,26 @@ export async function createIncome(
     monthKey?: string;
   },
 ): Promise<IncomeRecord> {
-  const setup = await ensureNotionSetup();
   const account = await getAccount(householdId, input.accountId);
   const resolvedMonthKey = input.monthKey || deriveMonthKeyFromDate(input.date);
 
-  const created = await withNotionRetry(() =>
-    notion.pages.create({
-      parent: { database_id: setup.databases.income },
-      properties: {
-        Title: { title: titleValue(input.title) },
-        Amount: { number: input.amount },
-        Date: { date: { start: input.date } },
-        Account: { relation: [{ id: input.accountId }] },
-        "Month Key": { rich_text: richTextValue(resolvedMonthKey) },
-        Household: { relation: [{ id: householdId }] },
-      },
-    }),
-  );
+  const { data, error } = await supabaseAdmin
+    .from("income")
+    .insert({
+      household_id: householdId,
+      title: input.title,
+      amount: input.amount,
+      date: input.date,
+      account_id: input.accountId,
+      month_key: resolvedMonthKey,
+    })
+    .select("id, title, amount, date, account_id, month_key, household_id")
+    .single();
+
+  ensureNoSupabaseError(error, "Failed to create income");
 
   await updateAccountBalance(account.id, account.balance + input.amount);
-  const page = await getPageOrThrow(created.id);
-  return mapIncome(page);
+  return mapIncome(data as IncomeRow);
 }
 
 export async function updateIncome(
@@ -664,9 +700,11 @@ export async function updateIncome(
   if (existing.accountId === input.accountId) {
     const account = await getAccount(householdId, existing.accountId);
     const nextBalance = account.balance - existing.amount + input.amount;
+
     if (nextBalance < 0) {
       throw new HttpError(400, "Account would go negative");
     }
+
     await updateAccountBalance(account.id, nextBalance);
   } else {
     const oldAccount = await getAccount(householdId, existing.accountId);
@@ -680,18 +718,18 @@ export async function updateIncome(
     await updateAccountBalance(newAccount.id, newAccount.balance + input.amount);
   }
 
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: input.id,
-      properties: {
-        Title: { title: titleValue(input.title) },
-        Amount: { number: input.amount },
-        Date: { date: { start: input.date } },
-        Account: { relation: [{ id: input.accountId }] },
-        "Month Key": { rich_text: richTextValue(resolvedMonthKey) },
-      },
-    }),
-  );
+  const { error } = await supabaseAdmin
+    .from("income")
+    .update({
+      title: input.title,
+      amount: input.amount,
+      date: input.date,
+      account_id: input.accountId,
+      month_key: resolvedMonthKey,
+    })
+    .eq("id", input.id);
+
+  ensureNoSupabaseError(error, "Failed to update income");
 
   return getIncome(householdId, input.id);
 }
@@ -708,12 +746,9 @@ export async function deleteIncome(householdId: string, incomeId: string): Promi
   }
 
   await updateAccountBalance(account.id, account.balance - income.amount);
-  await withNotionRetry(() =>
-    notion.pages.update({
-      page_id: income.id,
-      archived: true,
-    }),
-  );
+
+  const { error } = await supabaseAdmin.from("income").delete().eq("id", income.id);
+  ensureNoSupabaseError(error, "Failed to delete income");
 }
 
 export async function createHiddenSavings(
@@ -726,32 +761,30 @@ export async function createHiddenSavings(
     monthKey?: string;
   },
 ): Promise<HiddenSavingsRecord> {
-  const setup = await ensureNotionSetup();
   const account = await getAccount(householdId, input.accountId);
-
   if (account.balance < input.amount) {
     throw new HttpError(400, "Insufficient account balance");
   }
 
   const resolvedMonthKey = input.monthKey || deriveMonthKeyFromDate(input.date);
 
-  const created = await withNotionRetry(() =>
-    notion.pages.create({
-      parent: { database_id: setup.databases.hiddenSavings },
-      properties: {
-        Title: { title: titleValue(input.title) },
-        Amount: { number: input.amount },
-        Date: { date: { start: input.date } },
-        "Month Key": { rich_text: richTextValue(resolvedMonthKey) },
-        Household: { relation: [{ id: householdId }] },
-      },
-    }),
-  );
+  const { data, error } = await supabaseAdmin
+    .from("hidden_savings")
+    .insert({
+      household_id: householdId,
+      title: input.title,
+      amount: input.amount,
+      date: input.date,
+      month_key: resolvedMonthKey,
+    })
+    .select("id, title, amount, date, month_key, household_id")
+    .single();
+
+  ensureNoSupabaseError(error, "Failed to create hidden savings entry");
 
   await updateAccountBalance(account.id, account.balance - input.amount);
 
-  const page = await getPageOrThrow(created.id);
-  return mapSavings(page);
+  return mapSavings(data as HiddenSavingsRow);
 }
 
 export async function initializeMonthAccounts(
@@ -778,18 +811,47 @@ export async function initializeMonthAccounts(
     (account) => account.monthKey === latestPreviousMonth,
   );
 
-  const templates = previousAccounts.length
-    ? previousAccounts.map((account) => ({
-        name: account.name,
-        type: account.type,
-        balance: duplicatePrevious || carryForward ? account.balance : 0,
-      }))
+  const shouldCarryBalances = duplicatePrevious || carryForward;
+
+  const normalizedFromPrevious = previousAccounts.length
+    ? previousAccounts.flatMap((account) => {
+        if (account.name === "Cash (Muneeb, Ayesha)") {
+          return [
+            {
+              name: "Cash (Muneeb)",
+              type: "Cash" as AccountType,
+              balance: shouldCarryBalances ? account.balance : 0,
+            },
+            {
+              name: "Cash (Ayesha)",
+              type: "Cash" as AccountType,
+              balance: 0,
+            },
+          ];
+        }
+
+        return [
+          {
+            name: account.name,
+            type: account.type,
+            balance: shouldCarryBalances ? account.balance : 0,
+          },
+        ];
+      })
+    : [];
+
+  const templates = normalizedFromPrevious.length
+    ? normalizedFromPrevious
     : DEFAULT_ACCOUNT_TEMPLATES.map((account) => ({
         ...account,
         balance: 0,
       }));
 
-  for (const template of templates) {
+  const uniqueTemplates = Array.from(
+    new Map(templates.map((template) => [template.name.toLowerCase(), template])).values(),
+  );
+
+  for (const template of uniqueTemplates) {
     await createAccount(householdId, {
       name: template.name,
       type: template.type,

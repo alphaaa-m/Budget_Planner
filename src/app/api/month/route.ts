@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
           ? "carried forward balances"
           : "zeroed balances";
 
-      await logActivitySafely({
+      void logActivitySafely({
         session,
         action: "initialize",
         entity: "month",
