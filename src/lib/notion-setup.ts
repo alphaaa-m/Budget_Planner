@@ -376,6 +376,10 @@ async function getOrCreateSystemConfigPageId(): Promise<string> {
   return page.id;
 }
 
+export async function getSystemConfigPageId(): Promise<string> {
+  return getOrCreateSystemConfigPageId();
+}
+
 async function readDatabaseIdsFromSystemConfig(
   configPageId: string,
 ): Promise<DatabaseIds | null> {
